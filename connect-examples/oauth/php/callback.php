@@ -1,82 +1,103 @@
 <?php
-# This sample demonstrates a bare-bones implementation of the Square Connect OAuth flow:
-#
-# 1. A merchant clicks the authorization link served by the root path (http://localhost:8000/)
-# 2. The merchant signs in to Square and submits the Permissions form. Note that if the merchant
-#    is already signed in to Square, and if the merchant has already authorized your application,
-#    the OAuth flow automatically proceeds to the next step without presenting the Permissions form.
-# 3. Square sends a request to your application's Redirect URL
-#    (which should be set to http://localhost:8000/callback.php on your application dashboard)
-# 4. The server extracts the authorization code provided in Square's request and passes it
-#    along to the Obtain Token endpoint.
-# 5. The Obtain Token endpoint returns an access token your application can use in subsequent requests
-#    to the Connect API.
-#
+/*
+|--------------------------------------------------------------------------
+| OAuth Callback Example
+|--------------------------------------------------------------------------
+|
+| Here we will show the bare-bones implementation of the Square Connect
+| OAuth flow. This will be called after the user clicked on the previous
+| link, signs in to Square and submits the Permissions form. Finnally,
+| Square sends a request to your application's Redirect URL (configured)
+| on your Square App settings at https://developers.squareup.com/apps.
+|
+| Here we will see how we can get an authorization token so we can
+| make API request in behalf of this merchant.
+*/
 
 require 'vendor/autoload.php';
-$dotenv = Dotenv\Dotenv::create(__DIR__);
+
+use Dotenv\Dotenv;
+use Square\Environment;
+use Square\Exceptions\ApiException;
+use Square\Http\ApiResponse;
+use Square\Models\ObtainTokenRequest;
+use Square\Models\ObtainTokenResponse;
+use Square\SquareClient;
+
+$dotenv = Dotenv::create(__DIR__);
 $dotenv->load();
 
-# Your application's ID and secret, available from your application dashboard
-$applicationId = ($_ENV["USE_PROD"] == 'true') ? $_ENV["PROD_APP_ID"]
-                                               : $_ENV["SANDBOX_APP_ID"];
-$applicationSecret = ($_ENV["USE_PROD"] == 'true') ? $_ENV["PROD_APP_SECRET"]
-                                                   : $_ENV["SANDBOX_APP_SECRET"];
+$prodEnv = getenv('ENVIRONMENT') === 'production';
 
+$appId = $prodEnv
+    ? getenv('PRODUCTION_APP_ID')
+    : getenv('SANDBOX_APP_ID');
 
-$api_config = new \SquareConnect\Configuration();
-$api_config->setHost( ($_ENV["USE_PROD"] == 'true') ? "https://connect.squareup.com"
-                                                    : "https://connect.squareupsandbox.com");
+$appAccessToken = $prodEnv
+    ? getenv('PRODUCTION_ACCESS_TOKEN')
+    : getenv('SANDBOX_ACCESS_TOKEN');
 
-$api_client = new \SquareConnect\ApiClient($api_config);
+$appSecret = $prodEnv
+    ? getenv('PRODUCTION_APP_SECRET')
+    : getenv('SANDBOX_APP_SECRET');
 
-$oauth_api = new SquareConnect\Api\OAuthApi($api_client);
+$client = new SquareClient([
+    'accessToken' => $appAccessToken,
+    'environment' => Environment::CUSTOM,
+    'baseUrl' => 'https://connect.squareupstaging.com',
+]);
 
-# Serves requests from Square to your application's redirect URL
-# Note that you need to set your application's Redirect URL to
-# http://localhost:8000/callback.php from your application dashboard
-function callback() {
-  global $oauth_api, $applicationId, $applicationSecret;
+$oAuthApi = $client->getOauthApi();
 
-  # Extract the returned authorization code from the URL
-  $authorizationCode = $_GET['code'];
-  if ($authorizationCode) {
-
-    # Create Obtain Token requests
-    $body = new \SquareConnect\Model\ObtainTokenRequest();
-    $body->setClientId($applicationId);
-    $body->setClientSecret($applicationSecret);
-    $body->setCode($authorizationCode);
-    $body->setGrantType('authorization_code');
-
-    try {
-      $response = $oauth_api->obtainToken($body);
-
-      # Extract the returned access token from the ObtainTokenResposne
-      $accessToken = $response->getAccessToken();
-      if ($accessToken != null) {
-
-        # Here, instead of printing the access token, your application server should store it securely
-        # and use it in subsequent requests to the Connect API on behalf of the merchant.
-        echo nl2br('Access token: ' . $accessToken);
-        echo "<br>";
-        echo 'Authorization succeeded!';
-
-        # The response from the Obtain Token endpoint did not include an access token. Something went wrong.
-      } else {
-        echo 'Code exchange failed!';
-      }
-    } catch (SquareConnect\ApiException $e) {
-      echo $e->getMessage();
-    }
-
-    # The request to the Redirect URL did not include an authorization code. Something went wrong.
-  } else {
+$authorizationCode = $_GET['code'];
+if (!$authorizationCode) {
     echo 'Authorization failed!';
-  }
+    exit;
 }
 
-# Execute the callback
-callback();
+// Prepare our request object
+$request = new ObtainTokenRequest($appId, $appSecret, 'authorization_code');
+$request->setCode($authorizationCode);
 
-?>
+try {
+    /**
+     * Send the request to the server
+     * @var ApiResponse $response
+     */
+    $response = $oAuthApi->obtainToken($request);
+
+    // If there was an error with the request we will
+    // print them to the browser screen here
+    if ($response->isError()) {
+        echo 'Api response has Errors';
+        $errors = $response->getErrors();
+        echo '<ul>';
+        foreach ($errors as $error) {
+            echo '<li>❌ ' . $error->getDetail() . '</li>';
+        }
+        echo '</ul>';
+        exit;
+    }
+
+    /**
+     * This response will have our new access token
+     * @var ObtainTokenResponse
+     */
+    $obtainTokenResponse = $response->getBody();
+    $accessToken = $obtainTokenResponse->getAccessToken();
+
+    if ($accessToken != null) {
+        // Here, instead of printing the access token, your application server
+        // should store it securely and use it in subsequent requests to the
+        // Connect API on behalf of the merchant.
+        echo '<p>Access token: ' . $accessToken . '</p><br>';
+        echo '<h3>🙌 Authorization succeeded!</h3>';
+    } else {
+        // The response from the Obtain Token endpoint did
+        // not include an access token. Something went wrong.
+        echo 'Code exchange failed!';
+    }
+} catch (ApiException $e) {
+    // This will be thrown if the API completely failed
+    echo $e->getMessage();
+}
